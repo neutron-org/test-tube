@@ -3,16 +3,21 @@ package testenv
 import (
 	"encoding/json"
 	"fmt"
+	"github.com/cosmos/cosmos-sdk/codec"
+	cryptocodec "github.com/cosmos/cosmos-sdk/crypto/codec"
+	authtypes "github.com/cosmos/cosmos-sdk/x/auth/types"
+	banktypes "github.com/cosmos/cosmos-sdk/x/bank/types"
+	ccvconsumertypes "github.com/cosmos/interchain-security/x/ccv/consumer/types"
+	"github.com/neutron-org/neutron/testutil/consumer"
 	"strings"
 	"time"
 
 	// helpers
 
-	// tendermint
-	"cosmossdk.io/errors"
 	abci "github.com/tendermint/tendermint/abci/types"
 	"github.com/tendermint/tendermint/libs/log"
-	tmtypes "github.com/tendermint/tendermint/proto/tendermint/types"
+	tmprototypes "github.com/tendermint/tendermint/proto/tendermint/types"
+	tmtypes "github.com/tendermint/tendermint/types"
 	dbm "github.com/tendermint/tm-db"
 
 	// cosmos-sdk
@@ -21,36 +26,21 @@ import (
 	"github.com/cosmos/cosmos-sdk/server"
 	"github.com/cosmos/cosmos-sdk/simapp"
 	sdk "github.com/cosmos/cosmos-sdk/types"
-	slashingtypes "github.com/cosmos/cosmos-sdk/x/slashing/types"
-	"github.com/cosmos/cosmos-sdk/x/staking"
-	stakingtypes "github.com/cosmos/cosmos-sdk/x/staking/types"
-
 	// wasmd
 	"github.com/CosmWasm/wasmd/x/wasm"
 	wasmtypes "github.com/CosmWasm/wasmd/x/wasm/types"
 
-	// osmosis
-	"github.com/osmosis-labs/osmosis/v17/app"
-	concentrateliquiditytypes "github.com/osmosis-labs/osmosis/v17/x/concentrated-liquidity/types"
-	gammtypes "github.com/osmosis-labs/osmosis/v17/x/gamm/types"
-	ibcratelimittypes "github.com/osmosis-labs/osmosis/v17/x/ibc-rate-limit/types"
-	incentivetypes "github.com/osmosis-labs/osmosis/v17/x/incentives/types"
-	lockuptypes "github.com/osmosis-labs/osmosis/v17/x/lockup/types"
-	minttypes "github.com/osmosis-labs/osmosis/v17/x/mint/types"
-	poolincentivetypes "github.com/osmosis-labs/osmosis/v17/x/pool-incentives/types"
-	poolmanagertypes "github.com/osmosis-labs/osmosis/v17/x/poolmanager/types"
-	protorevtypes "github.com/osmosis-labs/osmosis/v17/x/protorev/types"
-	superfluidtypes "github.com/osmosis-labs/osmosis/v17/x/superfluid/types"
-	tokenfactorytypes "github.com/osmosis-labs/osmosis/v17/x/tokenfactory/types"
-	twaptypes "github.com/osmosis-labs/osmosis/v17/x/twap/types"
+	// neutron
+	"github.com/neutron-org/neutron/app"
 )
 
 type TestEnv struct {
-	App                *app.OsmosisApp
+	App                *app.App
 	Ctx                sdk.Context
 	ParamTypesRegistry ParamTypeRegistry
 	ValPrivs           []*secp256k1.PrivKey
 	NodeHome           string
+	FaucetAccount      *secp256k1.PrivKey
 }
 
 // DebugAppOptions is a stub implementing AppOptions
@@ -64,23 +54,28 @@ func (ao DebugAppOptions) Get(o string) interface{} {
 	return nil
 }
 
-func SetupOsmosisApp(nodeHome string) *app.OsmosisApp {
+func SetupOsmosisApp(nodeHome string, faucet sdk.AccAddress) *app.App {
 	db := dbm.NewMemDB()
 
-	appInstance := app.NewOsmosisApp(
+	encCfg := app.MakeEncodingConfig()
+	cfg := app.GetDefaultConfig()
+	cfg.Seal()
+
+	appInstance := app.New(
 		log.NewNopLogger(),
 		db,
 		nil,
 		true,
 		map[int64]bool{},
-		nodeHome,
-		5,
-		DebugAppOptions{},
-		app.EmptyWasmOpts,
+		app.DefaultNodeHome,
+		0,
+		encCfg,
+		app.GetEnabledProposals(),
+		simapp.EmptyAppOptions{},
+		nil,
 	)
 
-	encCfg := app.MakeEncodingConfig()
-	genesisState := app.NewDefaultGenesisState()
+	genesisState := app.NewDefaultGenesisState(encCfg.Marshaler)
 
 	// Set up Wasm genesis state
 	wasmGen := wasm.GenesisState{
@@ -92,36 +87,12 @@ func SetupOsmosisApp(nodeHome string) *app.OsmosisApp {
 	}
 	genesisState[wasm.ModuleName] = encCfg.Marshaler.MustMarshalJSON(&wasmGen)
 
-	// Set up staking genesis state
-	stakingParams := stakingtypes.DefaultParams()
-	stakingParams.UnbondingTime = time.Hour * 24 * 7 * 2 // 2 weeks
-	stakingGen := stakingtypes.GenesisState{
-		Params: stakingParams,
-	}
-	genesisState[stakingtypes.ModuleName] = encCfg.Marshaler.MustMarshalJSON(&stakingGen)
+	// setup consumer genesis state
+	consumerGenesis := createConsumerGenesis()
+	genesisState[ccvconsumertypes.ModuleName] = encCfg.Marshaler.MustMarshalJSON(consumerGenesis)
 
-	// Set up incentive genesis state
-	lockableDurations := []time.Duration{
-		time.Hour * 24,      // 1 day
-		time.Hour * 24 * 7,  // 7 day
-		time.Hour * 24 * 14, // 14 days
-	}
-	incentivesParams := incentivetypes.DefaultParams()
-	incentivesParams.DistrEpochIdentifier = "day"
-	incentivesGen := incentivetypes.GenesisState{
-		Params:            incentivesParams,
-		LockableDurations: lockableDurations,
-	}
-	genesisState[incentivetypes.ModuleName] = encCfg.Marshaler.MustMarshalJSON(&incentivesGen)
-
-	// Set up pool incentives genesis state
-	poolIncentivesParams := poolincentivetypes.DefaultParams()
-	poolIncentivesParams.MintedDenom = "uosmo"
-	poolIncentivesGen := poolincentivetypes.GenesisState{
-		Params:            poolIncentivesParams,
-		LockableDurations: lockableDurations,
-	}
-	genesisState[poolincentivetypes.ModuleName] = encCfg.Marshaler.MustMarshalJSON(&poolIncentivesGen)
+	//Add Faucet account
+	AddGenesisAccount(encCfg.Marshaler, genesisState, faucet)
 
 	stateBytes, err := json.MarshalIndent(genesisState, "", " ")
 
@@ -147,35 +118,70 @@ func SetupOsmosisApp(nodeHome string) *app.OsmosisApp {
 	return appInstance
 }
 
+func AddGenesisAccount(cdc codec.Codec, genesisState app.GenesisState, addr sdk.AccAddress) {
+	coins, err := sdk.ParseCoinsNormalized("2000000000000000000untrn")
+	requireNoErr(err)
+	balances := banktypes.Balance{Address: addr.String(), Coins: coins.Sort()}
+	bankGenState := banktypes.GetGenesisStateFromAppState(cdc, genesisState)
+	bankGenState.Balances = append(bankGenState.Balances, balances)
+	bankGenState.Balances = banktypes.SanitizeGenesisBalances(bankGenState.Balances)
+	bankGenState.Supply = bankGenState.Supply.Add(balances.Coins...)
+
+	authGenState := authtypes.GetGenesisStateFromAppState(cdc, genesisState)
+
+	accs, err := authtypes.UnpackAccounts(authGenState.Accounts)
+	requireNoErr(err)
+	baseAccount := authtypes.NewBaseAccount(addr, nil, 0, 0)
+	accs = append(accs, baseAccount)
+	accs = authtypes.SanitizeGenesisAccounts(accs)
+
+	genAccs, err := authtypes.PackAccounts(accs)
+	requireNoErr(err)
+
+	authGenState.Accounts = genAccs
+
+	genesisState[authtypes.ModuleName] = cdc.MustMarshalJSON(&authGenState)
+	genesisState[banktypes.ModuleName] = cdc.MustMarshalJSON(bankGenState)
+}
+
+func createConsumerGenesis() *ccvconsumertypes.GenesisState {
+	genesisState := consumer.CreateMinimalConsumerTestGenesis()
+	valPriv := secp256k1.GenPrivKey()
+	valPub := valPriv.PubKey()
+	tmProtoPublicKey, err := cryptocodec.ToTmProtoPublicKey(valPub)
+	requireNoErr(err)
+	initialValset := []abci.ValidatorUpdate{{PubKey: tmProtoPublicKey, Power: 100}}
+	vals, err := tmtypes.PB2TM.ValidatorUpdates(initialValset)
+	requireNoErr(err)
+
+	genesisState.InitialValSet = initialValset
+	genesisState.ProviderConsensusState.NextValidatorsHash = tmtypes.NewValidatorSet(vals).Hash()
+	return genesisState
+}
+
 func (env *TestEnv) BeginNewBlock(executeNextEpoch bool, timeIncreaseSeconds uint64) {
 	var valAddr []byte
 
-	validators := env.App.StakingKeeper.GetAllValidators(env.Ctx)
+	//env.App.ConsumerKeeper.GetAllCCValidator()
+
+	validators := env.App.ConsumerKeeper.GetAllCCValidator(env.Ctx)
 	if len(validators) >= 1 {
-		valAddrFancy, err := validators[0].GetConsAddr()
+		pk, err := validators[0].ConsPubKey()
 		requireNoErr(err)
+		valAddrFancy := sdk.ConsAddress(pk.Address())
 		valAddr = valAddrFancy.Bytes()
 	} else {
-		valPriv, valAddrFancy := env.setupValidator(stakingtypes.Bonded)
-		validator, _ := env.App.StakingKeeper.GetValidator(env.Ctx, valAddrFancy)
-		valAddr2, _ := validator.GetConsAddr()
-		valAddr = valAddr2.Bytes()
-
-		env.ValPrivs = append(env.ValPrivs, valPriv)
-		err := simapp.FundAccount(env.App.BankKeeper, env.Ctx, valAddrFancy.Bytes(), sdk.NewCoins(sdk.NewInt64Coin("uosmo", 9223372036854775807)))
-		if err != nil {
-			panic(errors.Wrapf(err, "Failed to fund account"))
-		}
+		panic("ccv consumer section is not configured")
 	}
 
 	env.beginNewBlockWithProposer(executeNextEpoch, valAddr, timeIncreaseSeconds)
 }
 
 func (env *TestEnv) GetValidatorAddresses() []string {
-	validators := env.App.StakingKeeper.GetAllValidators(env.Ctx)
+	validators := env.App.ConsumerKeeper.GetAllCCValidator(env.Ctx)
 	var addresses []string
 	for _, validator := range validators {
-		addresses = append(addresses, validator.OperatorAddress)
+		addresses = append(addresses, sdk.ValAddress(validator.GetAddress()).String())
 	}
 
 	return addresses
@@ -183,25 +189,25 @@ func (env *TestEnv) GetValidatorAddresses() []string {
 
 // beginNewBlockWithProposer begins a new block with a proposer.
 func (env *TestEnv) beginNewBlockWithProposer(executeNextEpoch bool, proposer sdk.ValAddress, timeIncreaseSeconds uint64) {
-	validator, found := env.App.StakingKeeper.GetValidator(env.Ctx, proposer)
+	validator, found := env.App.ConsumerKeeper.GetCCValidator(env.Ctx, proposer)
 
 	if !found {
 		panic("validator not found")
 	}
 
-	valConsAddr, err := validator.GetConsAddr()
-	requireNoErr(err)
+	//valConsAddr, err :=
+	//requireNoErr(err)
 
-	valAddr := valConsAddr.Bytes()
+	valAddr := validator.GetAddress()
 
-	epochIdentifier := env.App.SuperfluidKeeper.GetEpochIdentifier(env.Ctx)
-	epoch := env.App.EpochsKeeper.GetEpochInfo(env.Ctx, epochIdentifier)
+	//epochIdentifier := env.App.SuperfluidKeeper.GetEpochIdentifier(env.Ctx)
+	//epoch := env.App.EpochsKeeper.GetEpochInfo(env.Ctx, epochIdentifier)
 	newBlockTime := env.Ctx.BlockTime().Add(time.Duration(timeIncreaseSeconds) * time.Second)
-	if executeNextEpoch {
-		newBlockTime = env.Ctx.BlockTime().Add(epoch.Duration).Add(time.Second)
-	}
+	//if executeNextEpoch {
+	//	newBlockTime = env.Ctx.BlockTime().Add(epoch.Duration).Add(time.Second)
+	//}
 
-	header := tmtypes.Header{ChainID: "osmosis-1", Height: env.Ctx.BlockHeight() + 1, Time: newBlockTime}
+	header := tmprototypes.Header{ChainID: "osmosis-1", Height: env.Ctx.BlockHeight() + 1, Time: newBlockTime}
 	newCtx := env.Ctx.WithBlockTime(newBlockTime).WithBlockHeight(env.Ctx.BlockHeight() + 1)
 	env.Ctx = newCtx
 	lastCommitInfo := abci.LastCommitInfo{
@@ -216,64 +222,64 @@ func (env *TestEnv) beginNewBlockWithProposer(executeNextEpoch bool, proposer sd
 	env.Ctx = env.App.NewContext(false, reqBeginBlock.Header)
 }
 
-func (env *TestEnv) setupValidator(bondStatus stakingtypes.BondStatus) (*secp256k1.PrivKey, sdk.ValAddress) {
-	valPriv := secp256k1.GenPrivKey()
-	valPub := valPriv.PubKey()
-	valAddr := sdk.ValAddress(valPub.Address())
-	bondDenom := env.App.StakingKeeper.GetParams(env.Ctx).BondDenom
-	selfBond := sdk.NewCoins(sdk.Coin{Amount: sdk.NewInt(100), Denom: bondDenom})
-
-	err := simapp.FundAccount(env.App.BankKeeper, env.Ctx, sdk.AccAddress(valPub.Address()), selfBond)
-	requireNoErr(err)
-
-	stakingHandler := staking.NewHandler(*env.App.StakingKeeper)
-	stakingCoin := sdk.NewCoin(bondDenom, selfBond[0].Amount)
-	ZeroCommission := stakingtypes.NewCommissionRates(sdk.ZeroDec(), sdk.ZeroDec(), sdk.ZeroDec())
-	msg, err := stakingtypes.NewMsgCreateValidator(valAddr, valPub, stakingCoin, stakingtypes.Description{}, ZeroCommission, sdk.OneInt())
-	requireNoErr(err)
-	res, err := stakingHandler(env.Ctx, msg)
-	requireNoErr(err)
-	requireNoNil("staking handler", res)
-
-	env.App.BankKeeper.SendCoinsFromModuleToModule(env.Ctx, stakingtypes.NotBondedPoolName, stakingtypes.BondedPoolName, sdk.NewCoins(stakingCoin))
-
-	val, found := env.App.StakingKeeper.GetValidator(env.Ctx, valAddr)
-	requierTrue("validator found", found)
-
-	val = val.UpdateStatus(bondStatus)
-	env.App.StakingKeeper.SetValidator(env.Ctx, val)
-
-	consAddr, err := val.GetConsAddr()
-	requireNoErr(err)
-
-	signingInfo := slashingtypes.NewValidatorSigningInfo(
-		consAddr,
-		env.Ctx.BlockHeight(),
-		0,
-		time.Unix(0, 0),
-		false,
-		0,
-	)
-	env.App.SlashingKeeper.SetValidatorSigningInfo(env.Ctx, consAddr, signingInfo)
-
-	return valPriv, valAddr
-}
+//func (env *TestEnv) setupValidator(bondStatus stakingtypes.BondStatus) (*secp256k1.PrivKey, sdk.ValAddress) {
+//	valPriv := secp256k1.GenPrivKey()
+//	valPub := valPriv.PubKey()
+//	valAddr := sdk.ValAddress(valPub.Address())
+//	bondDenom := env.App.StakingKeeper.GetParams(env.Ctx).BondDenom
+//	selfBond := sdk.NewCoins(sdk.Coin{Amount: sdk.NewInt(100), Denom: bondDenom})
+//
+//	err := simapp.FundAccount(env.App.BankKeeper, env.Ctx, sdk.AccAddress(valPub.Address()), selfBond)
+//	requireNoErr(err)
+//
+//	stakingHandler := staking.NewHandler(*env.App.StakingKeeper)
+//	stakingCoin := sdk.NewCoin(bondDenom, selfBond[0].Amount)
+//	ZeroCommission := stakingtypes.NewCommissionRates(sdk.ZeroDec(), sdk.ZeroDec(), sdk.ZeroDec())
+//	msg, err := stakingtypes.NewMsgCreateValidator(valAddr, valPub, stakingCoin, stakingtypes.Description{}, ZeroCommission, sdk.OneInt())
+//	requireNoErr(err)
+//	res, err := stakingHandler(env.Ctx, msg)
+//	requireNoErr(err)
+//	requireNoNil("staking handler", res)
+//
+//	env.App.BankKeeper.SendCoinsFromModuleToModule(env.Ctx, stakingtypes.NotBondedPoolName, stakingtypes.BondedPoolName, sdk.NewCoins(stakingCoin))
+//
+//	val, found := env.App.StakingKeeper.GetValidator(env.Ctx, valAddr)
+//	requierTrue("validator found", found)
+//
+//	val = val.UpdateStatus(bondStatus)
+//	env.App.StakingKeeper.SetValidator(env.Ctx, val)
+//
+//	consAddr, err := val.GetConsAddr()
+//	requireNoErr(err)
+//
+//	signingInfo := slashingtypes.NewValidatorSigningInfo(
+//		consAddr,
+//		env.Ctx.BlockHeight(),
+//		0,
+//		time.Unix(0, 0),
+//		false,
+//		0,
+//	)
+//	env.App.SlashingKeeper.SetValidatorSigningInfo(env.Ctx, consAddr, signingInfo)
+//
+//	return valPriv, valAddr
+//}
 
 func (env *TestEnv) SetupParamTypes() {
-	pReg := env.ParamTypesRegistry
+	//pReg := env.ParamTypesRegistry
 
-	pReg.RegisterParamSet(&lockuptypes.Params{})
-	pReg.RegisterParamSet(&incentivetypes.Params{})
-	pReg.RegisterParamSet(&minttypes.Params{})
-	pReg.RegisterParamSet(&twaptypes.Params{})
-	pReg.RegisterParamSet(&gammtypes.Params{})
-	pReg.RegisterParamSet(&ibcratelimittypes.Params{})
-	pReg.RegisterParamSet(&tokenfactorytypes.Params{})
-	pReg.RegisterParamSet(&superfluidtypes.Params{})
-	pReg.RegisterParamSet(&poolincentivetypes.Params{})
-	pReg.RegisterParamSet(&protorevtypes.Params{})
-	pReg.RegisterParamSet(&poolmanagertypes.Params{})
-	pReg.RegisterParamSet(&concentrateliquiditytypes.Params{})
+	//pReg.RegisterParamSet(&lockuptypes.Params{})
+	//pReg.RegisterParamSet(&incentivetypes.Params{})
+	//pReg.RegisterParamSet(&minttypes.Params{})
+	//pReg.RegisterParamSet(&twaptypes.Params{})
+	//pReg.RegisterParamSet(&gammtypes.Params{})
+	//pReg.RegisterParamSet(&ibcratelimittypes.Params{})
+	//pReg.RegisterParamSet(&tokenfactorytypes.Params{})
+	//pReg.RegisterParamSet(&superfluidtypes.Params{})
+	//pReg.RegisterParamSet(&poolincentivetypes.Params{})
+	//pReg.RegisterParamSet(&protorevtypes.Params{})
+	//pReg.RegisterParamSet(&poolmanagertypes.Params{})
+	//pReg.RegisterParamSet(&concentrateliquiditytypes.Params{})
 }
 
 func requireNoErr(err error) {

@@ -10,8 +10,8 @@ use test_tube::runner::result::{RunnerExecuteResult, RunnerResult};
 use test_tube::runner::Runner;
 use test_tube::BaseApp;
 
-const FEE_DENOM: &str = "uosmo";
-const OSMO_ADDRESS_PREFIX: &str = "osmo";
+const FEE_DENOM: &str = "untrn";
+const OSMO_ADDRESS_PREFIX: &str = "neutron";
 const CHAIN_ID: &str = "osmosis-1";
 const DEFAULT_GAS_ADJUSTMENT: f64 = 1.2;
 
@@ -175,7 +175,7 @@ mod tests {
     fn test_init_accounts() {
         let app = OsmosisTestApp::default();
         let accounts = app
-            .init_accounts(&coins(100_000_000_000, "uosmo"), 3)
+            .init_accounts(&coins(100_000_000_000, "untrn"), 3)
             .unwrap();
 
         assert!(accounts.get(0).is_some());
@@ -216,7 +216,7 @@ mod tests {
         let app = OsmosisTestApp::default();
 
         let acc = app
-            .init_account(&coins(100_000_000_000_000, "uosmo"))
+            .init_account(&coins(100_000_000_000_000, "untrn"))
             .unwrap();
         let addr = acc.address();
 
@@ -299,13 +299,13 @@ mod tests {
         let alice = app
             .init_account(&[
                 Coin::new(1_000_000_000_000, "uatom"),
-                Coin::new(1_000_000_000_000, "uosmo"),
+                Coin::new(1_000_000_000_000, "untrn"),
             ])
             .unwrap();
 
         let gamm = Gamm::new(&app);
 
-        let pool_liquidity = vec![Coin::new(1_000, "uatom"), Coin::new(1_000, "uosmo")];
+        let pool_liquidity = vec![Coin::new(1_000, "uatom"), Coin::new(1_000, "untrn")];
         let pool_id = gamm
             .create_basic_pool(&pool_liquidity, &alice)
             .unwrap()
@@ -345,7 +345,7 @@ mod tests {
             .init_accounts(
                 &[
                     Coin::new(1_000_000_000_000, "uatom"),
-                    Coin::new(1_000_000_000_000, "uosmo"),
+                    Coin::new(1_000_000_000_000, "untrn"),
                 ],
                 2,
             )
@@ -409,10 +409,10 @@ mod tests {
     fn test_custom_fee() {
         let app = OsmosisTestApp::default();
         let initial_balance = 1_000_000_000_000;
-        let alice = app.init_account(&coins(initial_balance, "uosmo")).unwrap();
-        let bob = app.init_account(&coins(initial_balance, "uosmo")).unwrap();
+        let alice = app.init_account(&coins(initial_balance, "untrn")).unwrap();
+        let bob = app.init_account(&coins(initial_balance, "untrn")).unwrap();
 
-        let amount = Coin::new(1_000_000, "uosmo");
+        let amount = Coin::new(1_000_000, "untrn");
         let gas_limit = 100_000_000;
 
         // use FeeSetting::Auto by default, so should not equal newly custom fee setting
@@ -437,7 +437,7 @@ mod tests {
             .unwrap()
             .balances
             .into_iter()
-            .find(|c| c.denom == "uosmo")
+            .find(|c| c.denom == "untrn")
             .unwrap()
             .amount
             .parse::<u128>()
@@ -452,7 +452,7 @@ mod tests {
         let app = OsmosisTestApp::default();
 
         let whitelisted_users = app
-            .init_accounts(&coins(1_000_000_000_000, "uosmo"), 2)
+            .init_accounts(&coins(1_000_000_000_000, "untrn"), 2)
             .unwrap();
 
         let in_pset = lockup::Params {
@@ -483,7 +483,7 @@ mod tests {
         let app = OsmosisTestApp::default();
 
         let balances = vec![
-            Coin::new(1_000_000_000_000, "uosmo"),
+            Coin::new(1_000_000_000_000, "untrn"),
             Coin::new(1_000_000_000_000, "uion"),
         ];
         let whitelisted_user = app.init_account(&balances).unwrap();
@@ -492,7 +492,7 @@ mod tests {
         let gamm = Gamm::new(&app);
         let pool_id = gamm
             .create_basic_pool(
-                &[Coin::new(1_000_000, "uosmo"), Coin::new(1_000_000, "uion")],
+                &[Coin::new(1_000_000, "untrn"), Coin::new(1_000_000, "uion")],
                 &whitelisted_user,
             )
             .unwrap()

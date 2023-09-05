@@ -104,6 +104,7 @@ fn build_libosmosistesttube(out: PathBuf) {
         .arg("-buildmode=c-shared")
         .arg("-o")
         .arg(out)
+        .arg("-tags=skip_ccv_msg_filter")
         .arg("main.go")
         .spawn()
         .unwrap()

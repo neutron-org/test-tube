@@ -24,7 +24,6 @@ import (
 
 	codectypes "github.com/cosmos/cosmos-sdk/codec/types"
 	"github.com/cosmos/cosmos-sdk/crypto/keys/secp256k1"
-	"github.com/cosmos/cosmos-sdk/simapp"
 	sdk "github.com/cosmos/cosmos-sdk/types"
 	banktypes "github.com/cosmos/cosmos-sdk/x/bank/types"
 
@@ -59,7 +58,12 @@ func InitTestEnv() uint64 {
 	}
 
 	env := new(testenv.TestEnv)
-	env.App = testenv.SetupOsmosisApp(nodeHome)
+
+	priv := secp256k1.GenPrivKey()
+	accAddr := sdk.AccAddress(priv.PubKey().Address())
+	env.FaucetAccount = priv
+
+	env.App = testenv.SetupOsmosisApp(nodeHome, accAddr)
 	env.NodeHome = nodeHome
 	env.ParamTypesRegistry = *testenv.NewParamTypeRegistry()
 
@@ -120,7 +124,9 @@ func InitAccount(envId uint64, coinsJson string) *C.char {
 
 	}
 
-	err := simapp.FundAccount(env.App.BankKeeper, env.Ctx, accAddr, coins)
+	err := env.App.BankKeeper.SendCoins(env.Ctx, sdk.AccAddress(env.FaucetAccount.PubKey().Address()), accAddr, coins)
+
+	//err := simapp.FundAccount(env.App.BankKeeper, env.Ctx, accAddr, coins)
 	if err != nil {
 		panic(errors.Wrapf(err, "Failed to fund account"))
 	}
@@ -233,7 +239,7 @@ func AccountSequence(envId uint64, bech32Address string) uint64 {
 		panic(err)
 	}
 
-	seq, err := env.App.AppKeepers.AccountKeeper.GetSequence(env.Ctx, addr)
+	seq, err := env.App.AccountKeeper.GetSequence(env.Ctx, addr)
 
 	if err != nil {
 		panic(err)
@@ -252,7 +258,7 @@ func AccountNumber(envId uint64, bech32Address string) uint64 {
 		panic(err)
 	}
 
-	acc := env.App.AppKeepers.AccountKeeper.GetAccount(env.Ctx, addr)
+	acc := env.App.AccountKeeper.GetAccount(env.Ctx, addr)
 	return acc.GetAccountNumber()
 }
 
@@ -385,4 +391,6 @@ func encodeBytesResultBytes(bytes []byte) *C.char {
 }
 
 // must define main for ffi build
-func main() {}
+func main() {
+	InitTestEnv()
+}
